@@ -1,0 +1,246 @@
+{
+ "cells": [
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Document Question Answering with local persistence\n",
+    "\n",
+    "An example of using Chroma DB and LangChain to do question answering over documents, with a locally persisted database. \n",
+    "You can store embeddings and documents, then use them again later."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from langchain.vectorstores import Chroma\n",
+    "from langchain.embeddings import OpenAIEmbeddings\n",
+    "from langchain.text_splitter import RecursiveCharacterTextSplitter\n",
+    "from langchain.llms import OpenAI\n",
+    "from langchain.chains import VectorDBQA\n",
+    "from langchain.document_loaders import TextLoader"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Load and process documents\n",
+    "\n",
+    "Load documents to do question answering over. If you want to do this over your documents, this is the section you should replace.\n",
+    "\n",
+    "Next we split documents into small chunks. This is so we can find the most relevant chunks for a query and pass only those into the LLM."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Load and process the text\n",
+    "loader = TextLoader('state_of_the_union.txt')\n",
+    "documents = loader.load()\n",
+    "\n",
+    "text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)\n",
+    "texts = text_splitter.split_documents(documents)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Initialize PeristedChromaDB\n",
+    "\n",
+    "Create embeddings for each chunk and insert into the Chroma vector database. The `persist_directory` argument tells ChromaDB where to store the database when it's persisted. "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Running Chroma using direct local API.\n",
+      "loaded in 41 embeddings\n",
+      "loaded in 1 collections\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/Users/antontroynikov/miniforge3/envs/chroma-langchain/lib/python3.9/site-packages/tqdm/auto.py:22: TqdmWarning: IProgress not found. Please update jupyter and ipywidgets. See https://ipywidgets.readthedocs.io/en/stable/user_install.html\n",
+      "  from .autonotebook import tqdm as notebook_tqdm\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Persisting DB to disk, putting it in the save folder db\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Embed and store the texts\n",
+    "# Supplying a persist_directory will store the embeddings on disk\n",
+    "persist_directory = 'db'\n",
+    "\n",
+    "embedding = OpenAIEmbeddings()\n",
+    "vectordb = Chroma.from_documents(documents=texts, embedding=embedding, persist_directory=persist_directory)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Persist the Database\n",
+    "In a notebook, we should call `persist()` to ensure the embeddings are written to disk.\n",
+    "This isn't necessary in a script - the database will be automatically persisted when the client object is destroyed."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "vectordb.persist()\n",
+    "vectordb = None"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Load the Database from disk, and create the chain\n",
+    "Be sure to pass the same `persist_directory` and `embedding_function` as you did when you instantiated the database. Initialize the chain we will use for question answering."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Running Chroma using direct local API.\n",
+      "loaded in 82 embeddings\n",
+      "loaded in 1 collections\n",
+      "PersistentDuckDB del, about to run persist\n",
+      "Persisting DB to disk, putting it in the save folder db\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Now we can load the persisted database from disk, and use it as normal. \n",
+    "vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding)\n",
+    "qa = VectorDBQA.from_chain_type(llm=OpenAI(), chain_type=\"stuff\", vectorstore=vectordb)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Ask questions!\n",
+    "\n",
+    "Now we can use the chain to ask questions!"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "' The president said that Ketanji Brown Jackson is one of our nation’s top legal minds and that she will continue Justice Breyer’s legacy of excellence. He also said she is a former top litigator in private practice, a former federal public defender, and from a family of public school educators and police officers. He mentioned that she is a consensus builder and has received a broad range of support from the Fraternal Order of Police to former judges appointed by Democrats and Republicans.'"
+      ]
+     },
+     "execution_count": 8,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "query = \"What did the president say about Ketanji Brown Jackson\"\n",
+    "qa.run(query)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Cleanup\n",
+    "\n",
+    "When you're done with the database, you can delete it from disk. You can delete the specific collection you're working with (if you have several), or delete the entire database by nuking the persistence directory."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Persisting DB to disk, putting it in the save folder db\n"
+     ]
+    }
+   ],
+   "source": [
+    "# To cleanup, you can delete the collection\n",
+    "vectordb.delete_collection()\n",
+    "vectordb.persist()\n",
+    "\n",
+    "# Or just nuke the persist directory\n",
+    "!rm -rf db/"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "chroma-langchain",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.16"
+  },
+  "orig_nbformat": 4,
+  "vscode": {
+   "interpreter": {
+    "hash": "c909e91d0cd7642213937968dfc91c71973575965f56cdcabb1e0b29abe5f7fa"
+   }
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
